@@ -22,11 +22,12 @@ newPoke_path = './' + version
 def lrelu(x, n, leak=0.2): 
     return tf.maximum(x, leak * x, name=n) 
  
-def augment_data(BATCH_SIZE):   
-    current_dir = os.getcwd()
-    current_dir = os.path.join(current_dir, '../data')
+def augment_data(data_dir, BATCH_SIZE):   
+    # current_dir = os.getcwd()
+    # current_dir = os.path.join(current_dir, '../data')
     # parent = os.path.dirname(current_dir)
-    pokemon_dir = os.path.join(current_dir, 'data_resized_black')
+    # pokemon_dir = os.path.join(current_dir, 'data_resized_black')
+    pokemon_dir = data_dir
     images = []
     for each in os.listdir(pokemon_dir):
         images.append(os.path.join(pokemon_dir,each))
@@ -171,7 +172,7 @@ def discriminator(input, is_train, reuse=False):
         return logits #, acted_out
 
 
-def train(EPOCH = 5000, BATCH_SIZE = 64, GAN_TYPE = 'wgan', RANDOM_DIM = 100, DIS_ITERS = 5, GEN_ITERS = 1
+def train(data_dir, EPOCH = 5000, BATCH_SIZE = 64, GAN_TYPE = 'wgan', RANDOM_DIM = 100, DIS_ITERS = 5, GEN_ITERS = 1
         , ITERS_NET_LOSS = 1, ITERS_NET_CHECKPOINT = 10, ITERS_NET_OUTPUT = 10):
     
     slim = tf.contrib.slim
@@ -223,7 +224,7 @@ def train(EPOCH = 5000, BATCH_SIZE = 64, GAN_TYPE = 'wgan', RANDOM_DIM = 100, DI
 
     # BATCH SIZE AND DATA
     batch_size = BATCH_SIZE
-    image_batch, samples_num = augment_data(BATCH_SIZE)
+    image_batch, samples_num = augment_data(data_dir, BATCH_SIZE)
     batch_num = int(samples_num / batch_size)
     total_batch = 0
 

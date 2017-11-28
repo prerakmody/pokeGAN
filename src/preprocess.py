@@ -53,6 +53,9 @@ def prepareData(cwd = 'os', data_dir = '../data', src_img = 'data', dest_resize 
                 else:
                     png.convert('RGB')
                     png.save(os.path.join(dest_bw, image.split('.')[0] + '.jpg'), 'JPEG')
+        
+        print ('[PREPROCESS] Dest Resized & B/W Images :', dest_bw)
+        return dest_bw
     
     else:
         print (' No images present in the "{0}" directory'.format(src_img))

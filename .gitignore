@@ -1,7 +1,11 @@
+# Sys Created Files
 *pycache*
+*.ipynb_checkpoints*
 
+# User created files
 *data_resized*
 *model*
 *demo/*.jpg
 
+# Others
 *floyd*
