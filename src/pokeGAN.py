@@ -4,29 +4,29 @@
 # generate new kinds of pokemons
 
 import os
-import tensorflow as tf
-import numpy as np
+import time
 import cv2
 import random
 import scipy.misc
-from utils import *
+import numpy as np
+from tqdm import tqdm_notebook
+import tensorflow as tf
+import tensorflow.contrib.slim as slim
 
-slim = tf.contrib.slim
+from src.utils import *
 
 HEIGHT, WIDTH, CHANNEL = 128, 128, 3
-BATCH_SIZE = 64
-EPOCH = 5000
-os.environ['CUDA_VISIBLE_DEVICES'] = '15'
 version = 'newPokemon'
 newPoke_path = './' + version
 
 def lrelu(x, n, leak=0.2): 
     return tf.maximum(x, leak * x, name=n) 
  
-def process_data():   
+def augment_data(BATCH_SIZE):   
     current_dir = os.getcwd()
+    current_dir = os.path.join(current_dir, '../data')
     # parent = os.path.dirname(current_dir)
-    pokemon_dir = os.path.join(current_dir, 'resized_black')
+    pokemon_dir = os.path.join(current_dir, 'data_resized_black')
     images = []
     for each in os.listdir(pokemon_dir):
         images.append(os.path.join(pokemon_dir,each))
@@ -67,7 +67,7 @@ def generator(input, random_dim, is_train, reuse=False):
     c4, c8, c16, c32, c64 = 512, 256, 128, 64, 32 # channel num
     s4 = 4
     output_dim = CHANNEL  # RGB image
-    with tf.variable_scope('gen') as scope:
+    with tf.variable_scope('GEN') as scope:
         if reuse:
             scope.reuse_variables()
         w1 = tf.get_variable('w1', shape=[random_dim, s4 * s4 * c4], dtype=tf.float32,
@@ -115,7 +115,7 @@ def generator(input, random_dim, is_train, reuse=False):
 
 def discriminator(input, is_train, reuse=False):
     c2, c4, c8, c16 = 64, 128, 256, 512  # channel num: 64, 128, 256, 512
-    with tf.variable_scope('dis') as scope:
+    with tf.variable_scope('DIS') as scope:
         if reuse:
             scope.reuse_variables()
         # 64*64*64
@@ -171,10 +171,134 @@ def discriminator(input, is_train, reuse=False):
         return logits #, acted_out
 
 
-def train():
-    random_dim = 100
-    print os.environ['CUDA_VISIBLE_DEVICES']
+def train(EPOCH = 5000, BATCH_SIZE = 64, GAN_TYPE = 'wgan', RANDOM_DIM = 100, DIS_ITERS = 5, GEN_ITERS = 1
+        , ITERS_NET_LOSS = 1, ITERS_NET_CHECKPOINT = 10, ITERS_NET_OUTPUT = 10):
     
+    slim = tf.contrib.slim
+    
+    print (' ------- TRAINING -------')
+
+    # INPUTS TO NETWORK
+    with tf.variable_scope('input'):
+        real_image = tf.placeholder(tf.float32, shape = [None, HEIGHT, WIDTH, CHANNEL], name='real_image')
+        random_input = tf.placeholder(tf.float32, shape=[None, RANDOM_DIM], name='rand_input')
+        is_train = tf.placeholder(tf.bool, name='is_train')
+    
+    # GAN TYPE AND LOSSES
+    if GAN_TYPE == 'wgan':
+        fake_image = generator(random_input, RANDOM_DIM, is_train)
+        real_result = discriminator(real_image, is_train)
+        fake_result = discriminator(fake_image, is_train, reuse=True)
+        
+        d_loss = tf.reduce_mean(fake_result) - tf.reduce_mean(real_result)  # This optimizes the discriminator.
+        g_loss = -tf.reduce_mean(fake_result)  # This optimizes the generator.
+    
+    elif GAN_TYPE == 'dcgan':
+        fake_image = generator(random_input, RANDOM_DIM, is_train)
+        # sample_fake = generator(random_input, random_dim, is_train, reuse = True)
+        real_logits, real_result = discriminator(real_image, is_train)
+        fake_logits, fake_result = discriminator(fake_image, is_train, reuse=True)
+        
+        d_loss1 = tf.reduce_mean(
+                tf.nn.sigmoid_cross_entropy_with_logits(
+                logits = real_logits, labels = tf.ones_like(real_logits)))
+        d_loss2 = tf.reduce_mean(
+                tf.nn.sigmoid_cross_entropy_with_logits(
+                logits = fake_logits, labels = tf.zeros_like(fake_logits)))
+        
+        d_loss = d_loss1 + d_loss2
+        
+        g_loss = tf.reduce_mean(
+                tf.nn.sigmoid_cross_entropy_with_logits(
+                logits = fake_logits, labels = tf.ones_like(fake_logits)))
+            
+
+    # VARIABLES
+    t_vars = tf.trainable_variables()
+    d_vars = [var for var in t_vars if 'DIS' in var.name]
+    g_vars = [var for var in t_vars if 'GEN' in var.name]
+    trainer_d = tf.train.RMSPropOptimizer(learning_rate=2e-4).minimize(d_loss, var_list=d_vars)
+    trainer_g = tf.train.RMSPropOptimizer(learning_rate=2e-4).minimize(g_loss, var_list=g_vars)
+    d_clip = [v.assign(tf.clip_by_value(v, -0.01, 0.01)) for v in d_vars] # clip discriminator weights
+
+    # BATCH SIZE AND DATA
+    batch_size = BATCH_SIZE
+    image_batch, samples_num = augment_data(BATCH_SIZE)
+    batch_num = int(samples_num / batch_size)
+    total_batch = 0
+
+    # SESSION DEFINITIONS
+    sess = tf.Session()
+    saver = tf.train.Saver()
+    sess.run(tf.global_variables_initializer())
+    sess.run(tf.local_variables_initializer())
+
+    print ('Total training sample num : %d' % samples_num)
+    print ('Batch Size: %d, Batch num per epoch: %d, Epoch num: %d' % (batch_size, batch_num, EPOCH))
+
+    # TRAINING FROM PREVIOUS RUNS
+    if os.path.exists('./model/' + version):
+        ckpt = tf.train.latest_checkpoint('./model/' + version)
+        saver.restore(sess, ckpt)
+    
+    coord = tf.train.Coordinator()
+    threads = tf.train.start_queue_runners(sess=sess, coord=coord)
+
+    print ('\nStart training ...')
+    t0 = time.time()
+    for epoch in range(EPOCH):
+        with tqdm_notebook(total = batch_num , desc = 'Batches', leave = False) as pbar:
+            for j in range(batch_num):
+                pbar.update(1)
+
+                # DISCRIMINATOR
+                train_noise = np.random.uniform(-1.0, 1.0, size=[batch_size, RANDOM_DIM]).astype(np.float32)
+                for k in range(DIS_ITERS):
+                    train_image = sess.run(image_batch)
+                    #wgan clip weights
+                    sess.run(d_clip)
+                    
+                    # Update the discriminator
+                    _, dLoss = sess.run([trainer_d, d_loss],
+                                        feed_dict={random_input: train_noise, real_image: train_image, is_train: True})
+
+                # GENERATOR
+                for k in range(GEN_ITERS):
+                    # train_noise = np.random.uniform(-1.0, 1.0, size=[batch_size, RANDOM_DIM]).astype(np.float32)
+                    _, gLoss = sess.run([trainer_g, g_loss],
+                                        feed_dict={random_input: train_noise, is_train: True})
+
+                # print 'train:[%d/%d],d_loss:%f,g_loss:%f' % (i, j, dLoss, gLoss)
+                
+            # CHECKPOINTING
+            if epoch % ITERS_NET_CHECKPOINT == 0:
+                if not os.path.exists('./model/' + version):
+                    os.makedirs('./model/' + version)
+                saver.save(sess, './model/' +version + '/' + str(epoch))  
+
+            # TESTING OUTPUT OF THE NET
+            if epoch % ITERS_NET_OUTPUT == 0:
+                # save images
+                if not os.path.exists(newPoke_path):
+                    os.makedirs(newPoke_path)
+                sample_noise = np.random.uniform(-1.0, 1.0, size=[batch_size, RANDOM_DIM]).astype(np.float32)
+                imgtest = sess.run(fake_image, feed_dict={random_input: sample_noise, is_train: False})
+                # imgtest = imgtest * 255.0
+                # imgtest.astype(np.uint8)
+                save_images(imgtest, [8,8] ,newPoke_path + '/epoch' + str(epoch) + '.jpg')
+
+            if epoch % ITERS_NET_LOSS == 0:
+                time_elapsed = round(time.time() - t0, 2)
+                print ('[Train] : Iter - [%d], D_loss : %f, G_loss : %f, Time Elapsed: %f s' % (epoch, dLoss, gLoss, time_elapsed))
+                t0 = time.time()
+
+    coord.request_stop()
+    coord.join(threads)
+    
+
+
+def test():
+    random_dim = 100
     with tf.variable_scope('input'):
         real_image = tf.placeholder(tf.float32, shape = [None, HEIGHT, WIDTH, CHANNEL], name='real_image')
         random_input = tf.placeholder(tf.float32, shape=[None, random_dim], name='rand_input')
@@ -184,123 +308,17 @@ def train():
     fake_image = generator(random_input, random_dim, is_train)
     real_result = discriminator(real_image, is_train)
     fake_result = discriminator(fake_image, is_train, reuse=True)
-    
-    d_loss = tf.reduce_mean(fake_result) - tf.reduce_mean(real_result)  # This optimizes the discriminator.
-    g_loss = -tf.reduce_mean(fake_result)  # This optimizes the generator.
-    
-    # # dcgan loss
-    # fake_image = generator(random_input, random_dim, is_train)
-    # # sample_fake = generator(random_input, random_dim, is_train, reuse = True)
-    # real_logits, real_result = discriminator(real_image, is_train)
-    # fake_logits, fake_result = discriminator(fake_image, is_train, reuse=True)
-    
-    # d_loss1 = tf.reduce_mean(
-            # tf.nn.sigmoid_cross_entropy_with_logits(
-            # logits = real_logits, labels = tf.ones_like(real_logits)))
-    # d_loss2 = tf.reduce_mean(
-            # tf.nn.sigmoid_cross_entropy_with_logits(
-            # logits = fake_logits, labels = tf.zeros_like(fake_logits)))
-    
-    # d_loss = d_loss1 + d_loss2
-    
-    # g_loss = tf.reduce_mean(
-            # tf.nn.sigmoid_cross_entropy_with_logits(
-            # logits = fake_logits, labels = tf.ones_like(fake_logits)))
-            
-
-    t_vars = tf.trainable_variables()
-    d_vars = [var for var in t_vars if 'dis' in var.name]
-    g_vars = [var for var in t_vars if 'gen' in var.name]
-    # test
-    # print(d_vars)
-    trainer_d = tf.train.RMSPropOptimizer(learning_rate=2e-4).minimize(d_loss, var_list=d_vars)
-    trainer_g = tf.train.RMSPropOptimizer(learning_rate=2e-4).minimize(g_loss, var_list=g_vars)
-    # clip discriminator weights
-    d_clip = [v.assign(tf.clip_by_value(v, -0.01, 0.01)) for v in d_vars]
-
-    
-    batch_size = BATCH_SIZE
-    image_batch, samples_num = process_data()
-    
-    batch_num = int(samples_num / batch_size)
-    total_batch = 0
-    sess = tf.Session()
-    saver = tf.train.Saver()
+    sess = tf.InteractiveSession()
     sess.run(tf.global_variables_initializer())
-    sess.run(tf.local_variables_initializer())
-    # continue training
+    variables_to_restore = slim.get_variables_to_restore(include=['gen'])
+    print(variables_to_restore)
+    saver = tf.train.Saver(variables_to_restore)
     ckpt = tf.train.latest_checkpoint('./model/' + version)
     saver.restore(sess, ckpt)
-    coord = tf.train.Coordinator()
-    threads = tf.train.start_queue_runners(sess=sess, coord=coord)
-
-    print 'total training sample num:%d' % samples_num
-    print 'batch size: %d, batch num per epoch: %d, epoch num: %d' % (batch_size, batch_num, EPOCH)
-    print 'start training...'
-    for i in range(EPOCH):
-        for j in range(batch_num):
-            d_iters = 5
-            g_iters = 1
-
-            train_noise = np.random.uniform(-1.0, 1.0, size=[batch_size, random_dim]).astype(np.float32)
-            for k in range(d_iters):
-                train_image = sess.run(image_batch)
-                #wgan clip weights
-                sess.run(d_clip)
-                
-                # Update the discriminator
-                _, dLoss = sess.run([trainer_d, d_loss],
-                                    feed_dict={random_input: train_noise, real_image: train_image, is_train: True})
-
-            # Update the generator
-            for k in range(g_iters):
-                # train_noise = np.random.uniform(-1.0, 1.0, size=[batch_size, random_dim]).astype(np.float32)
-                _, gLoss = sess.run([trainer_g, g_loss],
-                                    feed_dict={random_input: train_noise, is_train: True})
-
-            # print 'train:[%d/%d],d_loss:%f,g_loss:%f' % (i, j, dLoss, gLoss)
-            
-        # save check point every 500 epoch
-        if i%500 == 0:
-            if not os.path.exists('./model/' + version):
-                os.makedirs('./model/' + version)
-            saver.save(sess, './model/' +version + '/' + str(i))  
-        if i%50 == 0:
-            # save images
-            if not os.path.exists(newPoke_path):
-                os.makedirs(newPoke_path)
-            sample_noise = np.random.uniform(-1.0, 1.0, size=[batch_size, random_dim]).astype(np.float32)
-            imgtest = sess.run(fake_image, feed_dict={random_input: sample_noise, is_train: False})
-            # imgtest = imgtest * 255.0
-            # imgtest.astype(np.uint8)
-            save_images(imgtest, [8,8] ,newPoke_path + '/epoch' + str(i) + '.jpg')
-            
-            print 'train:[%d],d_loss:%f,g_loss:%f' % (i, dLoss, gLoss)
-    coord.request_stop()
-    coord.join(threads)
-
-
-# def test():
-    # random_dim = 100
-    # with tf.variable_scope('input'):
-        # real_image = tf.placeholder(tf.float32, shape = [None, HEIGHT, WIDTH, CHANNEL], name='real_image')
-        # random_input = tf.placeholder(tf.float32, shape=[None, random_dim], name='rand_input')
-        # is_train = tf.placeholder(tf.bool, name='is_train')
-    
-    # # wgan
-    # fake_image = generator(random_input, random_dim, is_train)
-    # real_result = discriminator(real_image, is_train)
-    # fake_result = discriminator(fake_image, is_train, reuse=True)
-    # sess = tf.InteractiveSession()
-    # sess.run(tf.global_variables_initializer())
-    # variables_to_restore = slim.get_variables_to_restore(include=['gen'])
-    # print(variables_to_restore)
-    # saver = tf.train.Saver(variables_to_restore)
-    # ckpt = tf.train.latest_checkpoint('./model/' + version)
-    # saver.restore(sess, ckpt)
 
 
 if __name__ == "__main__":
-    train()
+    pass
+    # train()
     # test()
 
