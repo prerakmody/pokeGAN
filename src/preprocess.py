@@ -6,11 +6,15 @@ import shutil
 from PIL import Image
 from tqdm import tqdm_notebook
 
-def prepareData(data_dir = '../data', src_img = './data', dest_resize = './data_resized', dest_bw = 'data_resized_black' ,nx = 256, ny = 256):
-    cwd = os.getcwd()
+def prepareData(cwd = 'os', data_dir = '../data', src_img = 'data', dest_resize = 'data_resized', dest_bw = 'data_resized_black' ,nx = 256, ny = 256):
+    if cwd == 'os':
+        cwd = os.getcwd()
     data_dir = os.path.join(cwd, data_dir)
+    print ('[PREPROCESS] Data Dir:', data_dir)
     src_img = os.path.join(data_dir, src_img)
+    print ('[PREPROCESS] Src Images:', src_img)
     dest_resize = os.path.join(data_dir, dest_resize)
+    print ('[PREPROCESS] Dest Resized Images :', dest_resize)
     
     if os.path.exists(src_img):
         if os.path.exists(dest_resize):
